@@ -8,3 +8,85 @@ bibliography: references.bib
 
 ## Section
 This is a simple placeholder for the manuscript's main document [@knuth84].
+
+```{python}
+import pymc as pm
+import pytensor.tensor as pt
+import arviz as az
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+```
+
+```{python}
+cutpoints = np.array([300, 350, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500, 600, 1200])
+counts = np.array([8452, 22069, 53684, 12686, 13589, 13718, 15241, 14439, 15276, 16691, 16641, 12704, 12429, 22435, 28])
+
+# counts = np.array([5545, 21746, 50452, 11572, 12152, 11839, 12975, 11878, 12372, 12973, 14917, 12431, 12799, 23021, 633])
+
+[]
+k = 3
+```
+
+```{python}
+with pm.Model() as model:
+  mu = pm.Normal("mu", mu=450, sigma=50, shape=k)
+  sigma = pm.HalfNormal("sigma", 100, shape=k)
+  w = pm.Dirichlet("w", np.ones(k))
+  mixture = pm.NormalMixture("mixture", mu=mu, sigma=sigma, w=w)
+
+  z = pm.Deterministic("z", 1 - pm.math.exp(pm.logcdf(mixture, 507.5)))
+  x = pm.Deterministic("x", z * counts.sum())
+
+  logcdf = pm.logcdf(mixture, cutpoints)
+  cdf = pm.math.concatenate([[0], pm.math.exp(logcdf)])
+  pdf = pt.extra_ops.diff(cdf)
+  pm.Multinomial("counts", p=pdf, n=counts.sum(), observed=counts)
+```
+
+```{python}
+with model:
+  idata = pm.sample(draws=5000, chains=4, init="advi", target_accept=0.95)
+```
+
+```{python}
+az.summary(idata)
+```
+```{python}
+with model:
+  ppc = pm.sample_posterior_predictive(idata)
+```
+
+```{python}
+az.plot_trace(idata)
+```
+
+```{python}
+with model:
+  prior = pm.sample_prior_predictive(1000)
+```
+
+```{python}
+az.plot_dist(idata["posterior"]["mixture"], figsize=(12, 4), kind="hist", hist_kwargs={"bins": np.arange(0,750, 5)})
+plt.xticks(rotation = 90)
+plt.locator_params(nbins=20)
+plt.show()
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=(12, 4))
+# Plot observed bin count
+# Plot posterior predictive
+sns.barplot(counts, ax=ax)
+ppc.posterior_predictive.plot.scatter(x="counts_dim_0", y="counts", color="k", alpha=0.2)
+# Formatting
+ax.set_xticklabels([f"bin {n}" for n in range(len(counts))])
+ax.set_title("Six bin discretization of N(-2, 2)")
+plt.show()
+```
+
+```{python}
+((idata["posterior"]["mixture"][3] > 500).sum() / 5000)
+```
+
+
