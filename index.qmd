@@ -36,7 +36,7 @@ with pm.Model() as model:
   mixture = pm.NormalMixture("mixture", mu=mu, sigma=sigma, w=w)
 
   percentile = pm.Deterministic("percentile", 1 - pm.math.exp(pm.logcdf(mixture, 507.5)))
-  rank = pm.Deterministic("x", percentile * counts.sum())
+  rank = pm.Deterministic("rank", percentile * counts.sum())
 
   logcdf = pm.logcdf(mixture, cutpoints)
   cdf = pm.math.concatenate([[0], pm.math.exp(logcdf)])
