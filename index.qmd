@@ -1,13 +1,21 @@
----
-title: CRS Score Distribution Estimation
-authors:
-  - name: Talgat Omarov
-    corresponding: true
-bibliography: references.bib
----
+## Introduction
 
-## Section
-This is a simple placeholder for the manuscript's main document [@knuth84].
+I recently applied to Canada’s Express Entry program under the Canadian Experience Class and ended up with a Comprehensive Ranking System (CRS) score of 508. I wanted to know roughly how many candidates are ahead of me in the pool, but IRCC only publishes counts by score bins. That got me curious about reconstructing the full score distribution from those binned counts. Estimating that distribution can help me infer the number of candidates scoring above any threshold—like my 508—and visualize the overall shape of scores in the pool.
+
+## Why Binning Creates Issues
+
+IRCC’s table reports candidate counts in ranges (e.g., 451–500, 501–600). While that’s useful for a broad view, it obscures the detailed distribution within each bin. Standard density estimators assume a continuous sample of individual data points, but here we only have counts per interval. If I naively applied a kernel density estimate to the bin midpoints, I’d ignore within-bin variation and get a misleading smooth curve. Instead, I treat the observed counts as coming from a discretized mixture model and recover an underlying continuous distribution.
+
+## Modeling Approach
+
+I choose a Gaussian mixture model with three components to balance flexibility and interpretability. The model:
+
+- Defines component means (mu), spreads (sigma), and weights (w).
+- Constructs a continuous mixture distribution.
+- Computes the probability mass in each score bin via the Normal CDF at the cutpoints.
+- Fits the observed bin counts with a multinomial likelihood.
+- Derives the posterior distribution over the fraction (and count) of candidates above 507.5, which approximates my rank.
+- Below is the core model code, kept close to my original implementation.
 
 ```{python}
 import pymc as pm
@@ -16,77 +24,133 @@ import arviz as az
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+
+sns.set_theme(style="whitegrid")
 ```
 
-```{python}
-cutpoints = np.array([300, 350, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500, 600, 1200])
-counts = np.array([8452, 22069, 53684, 12686, 13589, 13718, 15241, 14439, 15276, 16691, 16641, 12704, 12429, 22435, 28])
-
-# counts = np.array([5545, 21746, 50452, 11572, 12152, 11839, 12975, 11878, 12372, 12973, 14917, 12431, 12799, 23021, 633])
-
-[]
-k = 3
-```
 
 ```{python}
+# Define bins and observed counts
+cutpoints = np.array([300, 350, 400, 410, 420, 430, 440, 450,
+                      460, 470, 480, 490, 500, 600, 1200])
+counts = np.array([8452, 22069, 53684, 12686, 13589, 13718,
+                   15241, 14439, 15276, 16691, 16641, 12704,
+                   12429, 22435, 28])
+
+k = 3  # number of mixture components
+
 with pm.Model() as model:
-  mu = pm.Normal("mu", mu=450, sigma=50, shape=k)
-  sigma = pm.HalfNormal("sigma", 100, shape=k)
-  w = pm.Dirichlet("w", np.ones(k))
-  mixture = pm.NormalMixture("mixture", mu=mu, sigma=sigma, w=w)
+    # Priors for mixture components
+    mu = pm.Normal("mu", mu=450, sigma=50, shape=k)
+    sigma = pm.HalfNormal("sigma", sigma=100, shape=k)
+    w = pm.Dirichlet("w", a=np.ones(k))
 
-  percentile = pm.Deterministic("percentile", 1 - pm.math.exp(pm.logcdf(mixture, 507.5)))
-  rank = pm.Deterministic("rank", percentile * counts.sum())
+    # Continuous mixture distribution
+    mixture = pm.NormalMixture("mixture", mu=mu, sigma=sigma, w=w)
 
-  logcdf = pm.logcdf(mixture, cutpoints)
-  cdf = pm.math.concatenate([[0], pm.math.exp(logcdf)])
-  pdf = pt.extra_ops.diff(cdf)
-  pm.Multinomial("counts", p=pdf, n=counts.sum(), observed=counts)
+    # Probability in each bin via CDF differences
+    logcdf = pm.logcdf(mixture, cutpoints)
+    cdf = pm.math.concatenate([[0], pm.math.exp(logcdf)])
+    pdf = pt.extra_ops.diff(cdf)
+
+    # Multinomial likelihood on observed counts
+    pm.Multinomial("counts", p=pdf, n=counts.sum(), observed=counts)
+
+    # Derived quantity: fraction and count above my score
+    percentile = pm.Deterministic("percentile_above_5075",
+                                  1 - pm.math.exp(pm.logcdf(mixture, 507.5)))
+    rank = pm.Deterministic("rank_above_5075", percentile * counts.sum())
 ```
+
+## Inference and Diagnostics
+
+I sample 5,000 draws per chain (4 chains) using ADVI initialization and a 0.95 target acceptance rate. Then I inspect convergence and mixing.
+
 
 ```{python}
 with model:
-  idata = pm.sample(draws=5000, chains=4, init="advi", target_accept=0.95)
+    idata = pm.sample(draws=5000, chains=4, init="advi", target_accept=0.95)
+
+# Trace plot for key parameters
+az.plot_trace(idata, var_names=["mu", "sigma", "w"])
+plt.tight_layout()
+plt.show()
 ```
 
-```{python}
-az.summary(idata)
-```
-```{python}
-with model:
-  ppc = pm.sample_posterior_predictive(idata)
-```
+## Estimated Score Distribution
+Using the posterior samples, I reconstruct the continuous density and overlay it on a histogram of synthetic draws.
+
 
 ```{python}
-az.plot_trace(idata)
-```
-
-```{python}
-with model:
-  prior = pm.sample_prior_predictive(1000)
-```
-
-```{python}
-az.plot_dist(idata["posterior"]["mixture"], figsize=(12, 4), kind="hist", hist_kwargs={"bins": np.arange(0,750, 5)})
-plt.xticks(rotation = 90)
+az.plot_dist(
+    idata["posterior"]["mixture"],
+    figsize=(12, 4),
+    kind="hist",
+    hist_kwargs={"bins": np.arange(0, 750, 10), "alpha": 0.7},
+)
+plt.title("Posterior Distribution of CRS Scores")
+plt.xlabel("CRS Score")
+plt.ylabel("Density")
+plt.xticks(rotation=90)
 plt.locator_params(nbins=20)
+plt.grid(alpha=0.3)
 plt.show()
 ```
 
 ```{python}
+with model:
+  ppc = pm.sample_posterior_predictive(idata)
+
 fig, ax = plt.subplots(figsize=(12, 4))
-# Plot observed bin count
-# Plot posterior predictive
 sns.barplot(counts, ax=ax)
 ppc.posterior_predictive.plot.scatter(x="counts_dim_0", y="counts", color="k", alpha=0.2)
-# Formatting
 ax.set_xticklabels([f"bin {n}" for n in range(len(counts))])
 ax.set_title("Six bin discretization of N(-2, 2)")
 plt.show()
 ```
 
+## Credible Interval for My Rank
+
+Finally, I summarize the posterior for the number of candidates ahead of me (score > 507.5):
+
+
 ```{python}
-((idata["posterior"]["mixture"][3] > 500).sum() / 5000)
+# Extract posterior samples of rank
+rank_samples = idata.posterior["rank_above_5075"].values.flatten()
+
+# Compute summary
+lower, median, upper = np.percentile(rank_samples, [2.5, 50, 97.5])
+
+# Plot
+fig, ax = plt.subplots(figsize=(10, 5))
+sns.histplot(rank_samples, bins=50, stat="density", alpha=0.7, ax=ax)
+
+# Draw quantile lines
+ax.axvline(lower, linestyle='--', linewidth=2, label='2.5% Quantile')
+ax.axvline(median, linestyle='-', linewidth=2, label='Median')
+ax.axvline(upper, linestyle='--', linewidth=2, label='97.5% Quantile')
+
+# Add labels with white background boxes
+ymax = ax.get_ylim()[1]
+text_kwargs = dict(ha='center', va='bottom',
+                   fontsize=14, fontweight='bold',
+                   bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.3'))
+
+ax.text(lower, ymax * 0.05, f"{lower:.0f}", **text_kwargs)
+ax.text(median, ymax * 0.8, f"{median:.0f}", **text_kwargs)
+ax.text(upper, ymax * 0.05, f"{upper:.0f}", **text_kwargs)
+
+# Titles and labels
+ax.set_title("Posterior Distribution of Candidates Ahead", fontsize=16, pad=15)
+ax.set_xlabel("Number of Candidates Scoring Above 507.5", fontsize=14)
+ax.set_ylabel("Density", fontsize=14)
+
+ax.legend(fontsize=12)
+plt.tight_layout()
+plt.show()
+
 ```
 
+## Conclusion
 
+This approach shows how to reconstruct a detailed score distribution from binned counts using Bayesian inference. The same pattern can apply to any binned data problem (credit scores, exam results, income brackets) where you need a smooth underlying estimate
