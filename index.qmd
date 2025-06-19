@@ -15,7 +15,7 @@ I choose a Gaussian mixture model with three components to balance flexibility a
 - Computes the probability mass in each score bin via the Normal CDF at the cutpoints.
 - Fits the observed bin counts with a multinomial likelihood.
 - Derives the posterior distribution over the fraction (and count) of candidates above 507.5, which approximates my rank.
-- Below is the core model code, kept close to my original implementation.
+- Below is the core model code
 
 ```{python}
 import pymc as pm
@@ -42,7 +42,7 @@ k = 3  # number of mixture components
 with pm.Model() as model:
     # Priors for mixture components
     mu = pm.Normal("mu", mu=450, sigma=50, shape=k)
-    sigma = pm.HalfNormal("sigma", sigma=100, shape=k)
+    sigma = pm.HalfNormal("sigma", sigma=50, shape=k)
     w = pm.Dirichlet("w", a=np.ones(k))
 
     # Continuous mixture distribution
@@ -62,6 +62,11 @@ with pm.Model() as model:
     rank = pm.Deterministic("rank_above_5075", percentile * counts.sum())
 ```
 
+To ensure flexibility while keeping the model grounded, I chose relatively uninformative but reasonable hyperpriors. 
+- The Normal prior on `mu` centers the component means around 450 with a standard deviation of 50, which places about 95% of the prior mass between 350 and 550. This range covers the majority of CRS scores where candidates tend to cluster. 
+- The HalfNormal prior on `sigma` with a standard deviation of 50 allows for plausible variability in spread while avoiding unrealistically wide components. 
+- Finally, the symmetric Dirichlet prior on `w` reflects no strong preference for how weights are distributed among components, encouraging the model to infer structure from the data rather than the prior.
+
 ## Inference and Diagnostics
 
 I sample 5,000 draws per chain (4 chains) using ADVI initialization and a 0.95 target acceptance rate. Then I inspect convergence and mixing.
@@ -76,6 +81,14 @@ az.plot_trace(idata, var_names=["mu", "sigma", "w"])
 plt.tight_layout()
 plt.show()
 ```
+
+The trace plots show that all parameters (means mu, spreads sigma, and weights w) stabilize quickly and fluctuate steadily without drift. This indicates good convergence and consistent sampling. The chains for each mixture component remain well separated, showing that label switching is not occurring. Label switching refers to components in a mixture model becoming indistinguishable during sampling, which can distort interpretation. Overall, the traces are well behaved, with no signs of divergence or poor mixing, so the posterior samples appear reliable.
+
+```{python}
+az.summary(idata, var_names=["mu", "sigma", "w"]).round(2)
+```
+
+All R-hat values are close to 1, with the largest at 1.03. This suggests good convergence across chains. Values below 1.1 are generally considered acceptable, and those near 1.0 indicate that the chains have mixed well and are sampling from the same posterior distribution.
 
 ## Estimated Score Distribution
 Using the posterior samples, I reconstruct the continuous density and overlay it on a histogram of synthetic draws.
